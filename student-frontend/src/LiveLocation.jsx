@@ -1,12 +1,95 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Bus, ArrowLeft, ShieldAlert, Clock, MapPin } from 'lucide-react';
+import { Bus, ArrowLeft, ShieldAlert, Clock, MapPin, Phone, Navigation, Send, ClockIcon } from 'lucide-react';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
+
+// Custom bus marker icon
+const busIcon = new L.DivIcon({
+  className: 'custom-bus-marker',
+  html: `
+    <div style="
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    ">
+      <span style="
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 12px;
+        height: 12px;
+        background: #f97316;
+        border-radius: 50%;
+        animation: bus-pulse 2s infinite;
+      "></span>
+      <div style="
+        background: #f97316;
+        color: white;
+        font-size: 10px;
+        font-weight: bold;
+        padding: 3px 8px;
+        border-radius: 20px;
+        border: 1.5px solid #fb923c;
+        backdrop-filter: blur(8px);
+        white-space: nowrap;
+        box-shadow: 0 4px 12px rgba(249,115,22,0.4);
+      ">
+        <span style="margin-right: 3px;">🚌</span>
+        <span id="bus-label">PSIT-07</span>
+      </div>
+    </div>
+  `,
+  iconSize: [60, 40],
+  iconAnchor: [30, 40],
+});
+
+const userIcon = new L.DivIcon({
+  className: 'custom-user-marker',
+  html: `
+    <div style="
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    ">
+      <span style="
+        width: 14px;
+        height: 14px;
+        background: #3b82f6;
+        border-radius: 50%;
+        border: 2.5px solid #60a5fa;
+        box-shadow: 0 0 0 4px rgba(59,130,246,0.2);
+      "></span>
+      <div style="
+        background: #2563eb;
+        color: white;
+        font-size: 9px;
+        font-weight: bold;
+        padding: 2px 7px;
+        border-radius: 12px;
+        border: 1px solid #3b82f6;
+        backdrop-filter: blur(8px);
+        white-space: nowrap;
+        margin-top: 4px;
+      ">You</div>
+    </div>
+  `,
+  iconSize: [30, 30],
+  iconAnchor: [15, 30],
+});
 
 export default function LiveTracking() {
   const location = useLocation();
   const navigate = useNavigate();
+  const mapRef = useRef(null);
+  const userMarkerRef = useRef(null);
+  const busMarkerRef = useRef(null);
+  const polylineRef = useRef(null);
 
-  // Data received from the previous page (Dashboard)
   const { studentName, busNumber, mobileNumber } = location.state || {
     studentName: "Student",
     busNumber: "PSIT-07",
@@ -14,231 +97,407 @@ export default function LiveTracking() {
   };
 
   const [busData, setBusData] = useState(null);
-  const [studentCoords, setStudentCoords] = useState(null);
+  const [userCoords, setUserCoords] = useState(null);
   const [distance, setDistance] = useState(null);
   const [eta, setEta] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [locationPermission, setLocationPermission] = useState('idle');
   const [sosModalOpen, setSosModalOpen] = useState(false);
   const [sosSent, setSosSent] = useState(false);
 
-  // =========================================================================
-  // BACKEND INTEGRATION NOTE FOR FETCHING DATA:
-  // Instead of this mock setTimeout, the backend developer should implement 
-  // an API call (e.g., using Axios or Fetch) to fetch live bus coordinates 
-  // and student data using the busNumber and mobileNumber.
-  // Example Endpoints:
-  // 1. GET /api/bus/live-location?busNo=${busNumber}
-  // 2. GET /api/student/details?mobile=${mobileNumber}
-  // =========================================================================
+  // Bus data (mock — replace with backend API)
+  const busCoords = { latitude: 26.4600, longitude: 80.3200 };
+
   useEffect(() => {
-    async function fetchDataAndCalculateETA() {
-      try {
-        // Simulating network/database latency
-        setTimeout(() => {
-          
-          // --- MOCK DATABASE (Replace with backend API response) ---
-          const databaseBuses = {
-            "PSIT-07": {
-              busNo: "PSIT-07",
-              routeName: "Route 1 — NH-2",
-              driverName: "Ramesh Kumar",
-              currentCoords: { latitude: 26.4600, longitude: 80.3200 }, // Real-time GPS from Bus GPS hardware/DB
-              status: "On Time"
-            }
-          };
+    async function fetchData() {
+      setTimeout(() => {
+        const databaseBuses = {
+          "PSIT-07": {
+            busNo: "PSIT-07",
+            routeName: "Route 1 — NH-2",
+            driverName: "Ramesh Kumar",
+            status: "On Time"
+          }
+        };
 
-          const databaseStudentsByMobile = {
-            "9876543210": {
-              name: studentName,
-              storedCoords: { latitude: 26.4499, longitude: 80.3319 } // Student's boarding stop/saved coords from DB
-            }
-          };
-
-          const foundBus = databaseBuses[busNumber.toUpperCase()] || databaseBuses["PSIT-07"];
-          const foundStudent = databaseStudentsByMobile[mobileNumber] || { 
-            storedCoords: { latitude: 26.4499, longitude: 80.3319 } 
-          };
-
-          setBusData(foundBus);
-          setStudentCoords(foundStudent.storedCoords);
-
-          // --- DISTANCE & ETA CALCULATION LOGIC ---
-          const busLat = foundBus.currentCoords.latitude;
-          const busLng = foundBus.currentCoords.longitude;
-          const stuLat = foundStudent.storedCoords.latitude;
-          const stuLng = foundStudent.storedCoords.longitude;
-
-          const latDiff = Math.abs(busLat - stuLat);
-          const lngDiff = Math.abs(busLng - stuLng);
-          const calculatedDist = ((latDiff + lngDiff) * 111).toFixed(1); // Approx KM conversion
-          const calculatedEta = Math.max(2, Math.round(calculatedDist * 3)); // Approx 3 mins per KM
-
-          setDistance(calculatedDist);
-          setEta(calculatedEta);
-          setLoading(false);
-        }, 1000);
-      } catch (error) {
-        console.error("Database error:", error);
+        const foundBus = databaseBuses[busNumber.toUpperCase()] || databaseBuses["PSIT-07"];
+        setBusData(foundBus);
         setLoading(false);
-      }
+      }, 800);
+    }
+    fetchData();
+  }, [busNumber]);
+
+  // Live user location via Geolocation API
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLocationPermission('denied');
+      return;
     }
 
-    fetchDataAndCalculateETA();
-  }, [busNumber, mobileNumber, studentName]);
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        setUserCoords({ latitude, longitude });
 
-  // =========================================================================
-  // BACKEND INTEGRATION NOTE FOR SOS EMERGENCY:
-  // When the student triggers SOS, send a POST request to alert college security.
-  // Example Endpoint: POST /api/emergency/sos
-  // Payload: { mobileNumber, busNumber, studentName, timestamp }
-  // =========================================================================
+        if (userMarkerRef.current) {
+          userMarkerRef.current.setLatLng([latitude, longitude]);
+        }
+
+        if (busMarkerRef.current && userCoords) {
+          const busPos = [busCoords.latitude, busCoords.longitude];
+          const userPos = [latitude, longitude];
+          if (polylineRef.current) {
+            polylineRef.current.setLatLngs([busPos, userPos]);
+          }
+          const dist = calculateDistance(busCoords.latitude, busCoords.longitude, latitude, longitude);
+          setDistance(dist);
+          setEta(Math.max(2, Math.round(dist * 3)));
+        }
+
+        setLocationPermission('granted');
+      },
+      (error) => {
+        console.warn("Geolocation error:", error.message);
+        setLocationPermission('denied');
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 5000,
+      }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
+
+  // Calculate distance in KM between two lat/lng points
+  function calculateDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return parseFloat((R * c).toFixed(1));
+  }
+
   const handleTriggerSOS = () => {
     setSosSent(true);
-    
-    // TODO: Replace with actual backend API call
-    // axios.post('/api/emergency/sos', { mobileNumber, busNumber })
-
     setTimeout(() => {
       setSosModalOpen(false);
       alert("Emergency alert sent successfully to PSIT Transport Cell and Security Desk!");
     }, 1000);
   };
 
-  // Loading state while data is being fetched from the database
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-[#1e293b] via-[#334155] to-[#64748b] text-white flex flex-col items-center justify-center font-sans">
-        <div className="w-8 h-8 border-3 border-orange-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-        <p className="text-xs text-slate-300 animate-pulse">Syncing database coordinates & preparing live map...</p>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white flex flex-col items-center justify-center font-sans px-4">
+        <div className="w-16 h-16 bg-gradient-to-br from-orange-500 to-amber-600 rounded-2xl flex items-center justify-center shadow-2xl shadow-orange-500/30 mb-6">
+          <Bus className="w-8 h-8 text-white" />
+        </div>
+        <h1 className="text-2xl font-bold text-white mb-2">PSIT Connects</h1>
+        <p className="text-slate-400 text-sm mb-6">Live Bus Tracking</p>
+        <div className="w-10 h-10 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+        <p className="text-xs text-slate-500 mt-4 animate-pulse">Finding your bus on the map...</p>
       </div>
     );
   }
 
+  // Center map between bus and user (or default to bus location)
+  const mapCenter = userCoords
+    ? [(busCoords.latitude + userCoords.latitude) / 2, (busCoords.longitude + userCoords.longitude) / 2]
+    : [busCoords.latitude, busCoords.longitude];
+  const mapZoom = userCoords ? 15 : 14;
+
   return (
-    <div className="min-h-screen bg-gradient-to-b from-[#1e293b] via-[#334155] to-[#64748b] text-white flex justify-center items-center font-sans">
-      
-      {/* Responsive App Frame Wrapper */}
-      <div className="w-full max-w-full min-h-screen md:min-h-[850px] md:rounded-3xl bg-slate-950 text-white flex flex-col relative overflow-hidden shadow-2xl border border-white/10">
-        
-        {/* Top Header Bar */}
-        <div className="absolute top-0 left-0 right-0 z-20 p-4 flex justify-between items-center bg-gradient-to-b from-slate-950/90 to-transparent">
-          <button 
-            onClick={() => navigate(-1)}
-            className="w-10 h-10 bg-white/10 backdrop-blur-md border border-white/20 rounded-xl flex items-center justify-center hover:bg-white/20 transition-all cursor-pointer shadow-lg text-white"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white font-sans overflow-hidden">
+      {/* Main container — responsive: full width on desktop, centered card on mobile */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 lg:gap-8 h-full lg:h-[calc(100vh-64px)]">
 
-          <div className="bg-white/10 backdrop-blur-md border border-white/20 px-4 py-2 rounded-xl text-center shadow-lg">
-            <h2 className="text-xs font-bold text-white tracking-wide">{busData.routeName}</h2>
-            <p className="text-[10px] text-orange-400 font-semibold">{busData.busNo}</p>
-          </div>
+          {/* LEFT: Map Panel — takes full height on desktop, full width on mobile */}
+          <div className="lg:col-span-2 bg-slate-950/80 backdrop-blur-xl rounded-3xl border border-white/10 shadow-2xl overflow-hidden relative min-h-[400px] sm:min-h-[500px] lg:min-h-0 flex flex-col">
 
-          {/* SOS Emergency Button */}
-          <button 
-            onClick={() => setSosModalOpen(true)}
-            className="w-10 h-10 bg-gradient-to-br from-red-600 to-rose-700 border border-red-500/40 rounded-xl flex items-center justify-center hover:scale-105 transition-all cursor-pointer shadow-lg shadow-red-600/30 animate-pulse"
-            title="Emergency SOS"
-          >
-            <ShieldAlert className="w-5 h-5 text-white" />
-          </button>
-        </div>
+            {/* Top Header Bar */}
+            <div className="absolute top-0 left-0 right-0 z-20 p-4 sm:p-5 flex justify-between items-center bg-gradient-to-b from-slate-950/95 to-transparent">
+              <button
+                onClick={() => navigate(-1)}
+                className="w-10 h-10 sm:w-12 sm:h-12 bg-white/10 backdrop-blur-md border border-white/20 rounded-xl flex items-center justify-center hover:bg-white/20 hover:scale-105 transition-all cursor-pointer shadow-lg"
+              >
+                <ArrowLeft className="w-5 h-5 sm:w-6 sm:h-6" />
+              </button>
 
-        {/* Map View Area (Simulated Live GPS Container - Can be replaced with Leaflet/Google Maps API later) */}
-        <div className="relative w-full h-[55vh] bg-slate-900 overflow-hidden flex items-center justify-center">
-          <div className="absolute inset-0 opacity-20 bg-[radial-gradient(#f97316_1px,transparent_1px)] [background-size:16px_16px]"></div>
-          
-          <svg className="absolute inset-0 w-full h-full" xmlns="http://www.w3.org/2000/svg">
-            <path d="M 50 150 Q 200 50, 350 300 T 400 500" fill="none" stroke="#f97316" strokeWidth="4" strokeDasharray="8 8" className="animate-pulse" />
-          </svg>
-
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
-            <span className="relative flex h-4 w-4 mb-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-4 w-4 bg-orange-500"></span>
-            </span>
-            <div className="bg-orange-600 text-white text-[11px] font-bold px-3 py-1 rounded-full shadow-2xl border border-orange-400 flex items-center gap-1.5 backdrop-blur-md">
-              <Bus className="w-3.5 h-3.5" />
-              <span>{busData.busNo} Live</span>
-            </div>
-          </div>
-
-          <div className="absolute bottom-4 left-4 right-4 bg-slate-900/80 backdrop-blur-md border border-white/10 px-4 py-2 rounded-2xl flex justify-between items-center text-[11px]">
-            <span className="text-slate-300 flex items-center gap-1">
-              <MapPin className="w-3.5 h-3.5 text-orange-400" />
-              Distance: <strong className="text-white">{distance} KM</strong>
-            </span>
-            <span className="text-slate-300 flex items-center gap-1">
-              <Clock className="w-3.5 h-3.5 text-emerald-400" />
-              ETA: <strong className="text-white">~{eta} mins</strong>
-            </span>
-          </div>
-        </div>
-
-        {/* Bottom Sheet Card */}
-        <div className="absolute bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-xl border-t border-white/15 rounded-t-3xl p-6 shadow-2xl z-20 flex flex-col gap-4">
-          <div className="w-12 h-1.5 bg-white/20 rounded-full mx-auto -mt-2"></div>
-
-          <div className="flex justify-between items-center">
-            <div>
-              <p className="text-[10px] uppercase tracking-wider text-orange-400 font-bold">Estimated Arrival</p>
-              <h2 className="text-2xl font-black text-white flex items-center gap-2 mt-0.5">
-                <span>~{eta} mins away</span>
-              </h2>
-            </div>
-            <span className="bg-emerald-500/20 text-emerald-300 text-xs font-semibold px-3 py-1.5 rounded-full border border-emerald-500/30 flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              {busData.status}
-            </span>
-          </div>
-
-          {/* Driver Details Card */}
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex items-center gap-3">
-            <div className="w-12 h-12 bg-gradient-to-br from-slate-700 to-slate-800 rounded-xl flex items-center justify-center font-bold text-orange-400 border border-white/10">
-              DR
-            </div>
-            <div>
-              <h4 className="text-sm font-bold text-white">{busData.driverName}</h4>
-              <p className="text-xs text-slate-400">Assigned Driver • {busData.busNo}</p>
-            </div>
-          </div>
-
-          <p className="text-[11px] text-center text-slate-400">
-            Tracking active for <span className="text-white font-semibold">{studentName}</span> (Mobile: {mobileNumber})
-          </p>
-        </div>
-
-        {/* SOS Emergency Confirmation Modal */}
-        {sosModalOpen && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center px-4">
-            <div className="bg-slate-900 border border-red-500/40 rounded-3xl p-6 max-w-sm w-full shadow-2xl text-center space-y-4">
-              <div className="w-16 h-16 bg-red-500/20 rounded-2xl mx-auto flex items-center justify-center border border-red-500/40">
-                <ShieldAlert className="w-8 h-8 text-red-500" />
+              <div className="bg-white/10 backdrop-blur-md border border-white/20 px-4 py-2.5 sm:px-5 sm:py-3 rounded-xl text-center shadow-lg min-w-[180px]">
+                <h2 className="text-sm sm:text-base font-bold text-white tracking-wide">{busData.routeName}</h2>
+                <p className="text-xs sm:text-sm text-orange-400 font-semibold">{busData.busNo}</p>
               </div>
-              <h3 className="text-xl font-bold text-white">Trigger Emergency SOS?</h3>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                This will instantly alert the PSIT Security Desk and Transport Incharge using your registered mobile number ({mobileNumber}).
-              </p>
-              <div className="grid grid-cols-2 gap-3 pt-2">
-                <button 
-                  onClick={() => setSosModalOpen(false)}
-                  className="bg-white/10 hover:bg-white/20 text-white font-semibold py-3 rounded-xl text-xs transition-all cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={handleTriggerSOS}
-                  disabled={sosSent}
-                  className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl text-xs shadow-lg shadow-red-600/40 transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {sosSent ? 'Sending...' : 'Yes, Send SOS'}
-                </button>
+
+              <button
+                onClick={() => setSosModalOpen(true)}
+                className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-red-600 to-rose-700 border border-red-500/40 rounded-xl flex items-center justify-center hover:scale-105 hover:shadow-lg hover:shadow-red-600/40 transition-all cursor-pointer shadow-lg shadow-red-600/30"
+                title="Emergency SOS"
+              >
+                <ShieldAlert className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+              </button>
+            </div>
+
+            {/* Interactive Map */}
+            <div className="relative flex-1 min-h-[400px] sm:min-h-[500px]">
+              <MapContainer
+                center={mapCenter}
+                zoom={mapZoom}
+                style={{ height: '100%', width: '100%' }}
+                ref={mapRef}
+                zoomControl={false}
+                attributionControl={false}
+              >
+                <TileLayer
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                />
+
+                {/* Bus marker */}
+                <Marker position={[busCoords.latitude, busCoords.longitude]} icon={busIcon}>
+                  <Popup>
+                    <div style={{ minWidth: 160, backgroundColor: '#1e293b', color: 'white', borderRadius: 12, padding: '10px 14px', fontFamily: 'sans-serif' }}>
+                      <p style={{ fontWeight: 'bold', margin: '0 0 4px', color: '#f97316', fontSize: '14px' }}>{busData.busNo}</p>
+                      <p style={{ margin: '0 0 2px', fontSize: '13px', color: '#cbd5e1' }}>{busData.driverName}</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>Live Tracking Active</p>
+                    </div>
+                  </Popup>
+                </Marker>
+
+                {/* User live location marker */}
+                {userCoords && (
+                  <Marker position={[userCoords.latitude, userCoords.longitude]} icon={userIcon}>
+                    <Popup>
+                      <div style={{ minWidth: 140, backgroundColor: '#1e293b', color: 'white', borderRadius: 12, padding: '10px 14px', fontFamily: 'sans-serif' }}>
+                        <p style={{ fontWeight: 'bold', margin: '0 0 4px', fontSize: '14px' }}>{studentName}</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>Your Live Location</p>
+                      </div>
+                    </Popup>
+                  </Marker>
+                )}
+
+                {/* Route line from bus to user */}
+                {userCoords && (
+                  <Polyline
+                    positions={[
+                      [busCoords.latitude, busCoords.longitude],
+                      [userCoords.latitude, userCoords.longitude]
+                    ]}
+                    ref={polylineRef}
+                    pathOptions={{
+                      color: '#f97316',
+                      weight: 4,
+                      dashArray: '10 10',
+                      opacity: 0.9,
+                    }}
+                  />
+                )}
+              </MapContainer>
+
+              {/* Location permission banner */}
+              {locationPermission === 'denied' && (
+                <div className="absolute top-4 left-4 right-4 sm:top-5 sm:left-5 sm:right-5 bg-blue-600/90 backdrop-blur-md border border-blue-400/30 rounded-xl px-4 py-3 text-sm text-white flex items-center gap-2 z-10 shadow-lg">
+                  <MapPin className="w-4 h-4 shrink-0" />
+                  <span>Location access needed for live tracking. Please allow when prompted.</span>
+                </div>
+              )}
+
+              {/* Distance & ETA overlay */}
+              <div className="absolute bottom-4 left-4 right-4 sm:bottom-5 sm:left-5 sm:right-5 bg-slate-900/90 backdrop-blur-md border border-white/10 px-4 py-3 rounded-2xl flex justify-between items-center text-sm z-10 shadow-xl">
+                <span className="text-slate-300 flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-orange-400" />
+                  <span className="hidden xs:inline">Distance: </span>
+                  <strong className="text-white">{distance ?? '—'} <span className="text-xs font-normal text-slate-400">KM</span></strong>
+                </span>
+                <span className="text-slate-300 flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-emerald-400" />
+                  <span className="hidden xs:inline">ETA: </span>
+                  <strong className="text-white">~<span className="text-sm">{eta ?? '—'}</span> <span className="text-xs font-normal text-slate-400">mins</span></strong>
+                </span>
               </div>
             </div>
-          </div>
-        )}
 
+            {/* Bottom gradient fade */}
+            <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-slate-900 to-transparent pointer-events-none"></div>
+          </div>
+
+          {/* RIGHT: Info Panel — desktop sidebar, mobile bottom sheet */}
+          <div className="lg:col-span-1 bg-slate-900/90 backdrop-blur-xl rounded-3xl border border-white/10 shadow-2xl p-5 sm:p-6 lg:p-8 flex flex-col overflow-y-auto hidden lg:flex">
+            {/* Panel header accent */}
+            <div className="flex items-center gap-3 mb-6 pb-4 border-b border-white/10">
+              <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></div>
+              <h3 className="text-lg font-bold text-white">Live Tracking</h3>
+              <span className="ml-auto text-xs text-slate-400 bg-white/5 px-3 py-1 rounded-full border border-white/5">
+                GPS Active
+              </span>
+            </div>
+
+            {/* Student Info Card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
+              <p className="text-xs uppercase tracking-wider text-orange-400 font-bold mb-3">Passenger</p>
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-600 rounded-xl flex items-center justify-center shadow-lg shadow-orange-500/20">
+                  <Navigation className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h4 className="text-base font-bold text-white">{studentName}</h4>
+                  <p className="text-sm text-slate-400 mt-0.5">Mobile: <span className="text-slate-300 font-mono">{mobileNumber}</span></p>
+                </div>
+              </div>
+            </div>
+
+            {/* Driver Info Card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
+              <p className="text-xs uppercase tracking-wider text-orange-400 font-bold mb-3">Assigned Driver</p>
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-gradient-to-br from-slate-700 to-slate-800 rounded-xl flex items-center justify-center font-bold text-orange-400 border border-white/10 shadow-lg">
+                  DR
+                </div>
+                <div>
+                  <h4 className="text-base font-bold text-white">{busData.driverName}</h4>
+                  <p className="text-sm text-slate-400 mt-0.5">{busData.busNo} • Route {busData.routeName}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Status Card */}
+            <div className="bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border border-emerald-500/20 rounded-2xl p-5 mb-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-emerald-400 font-bold mb-1">Status</p>
+                  <h4 className="text-xl font-black text-white">{busData.status}</h4>
+                </div>
+                <div className="w-14 h-14 bg-emerald-500/20 rounded-full flex items-center justify-center border border-emerald-500/30">
+                  <span className="w-8 h-8 rounded-full bg-emerald-400 animate-pulse"></span>
+                </div>
+              </div>
+            </div>
+
+            {/* ETA Card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
+              <p className="text-xs uppercase tracking-wider text-orange-400 font-bold mb-3">Estimated Arrival</p>
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 bg-gradient-to-br from-orange-500/20 to-amber-600/20 rounded-xl flex items-center justify-center border border-orange-500/30">
+                  <ClockIcon className="w-7 h-7 text-orange-400" />
+                </div>
+                <div>
+                  <h3 className="text-2xl font-black text-white">~{eta ?? '—'} <span className="text-base font-normal text-slate-400">mins</span></h3>
+                  <p className="text-sm text-slate-400">Away from your stop</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Distance Card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-5 mb-5">
+              <p className="text-xs uppercase tracking-wider text-orange-400 font-bold mb-3">Distance from Bus</p>
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 bg-gradient-to-br from-blue-500/20 to-cyan-600/20 rounded-xl flex items-center justify-center border border-blue-500/30">
+                  <MapPin className="w-7 h-7 text-blue-400" />
+                </div>
+                <div>
+                  <h3 className="text-2xl font-black text-white">{distance ?? '—'} <span className="text-base font-normal text-slate-400">KM</span></h3>
+                  <p className="text-sm text-slate-400">Straight-line distance</p>
+                </div>
+              </div>
+            </div>
+
+            {/* SOS Quick Action */}
+            <button
+              onClick={() => setSosModalOpen(true)}
+              className="mt-auto w-full py-3.5 bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-700 hover:to-rose-800 text-white font-bold rounded-2xl shadow-lg shadow-red-600/30 hover:shadow-red-600/50 transition-all cursor-pointer flex items-center justify-center gap-2 text-sm"
+            >
+              <ShieldAlert className="w-4 h-4" />
+              Emergency SOS
+            </button>
+
+            <p className="text-[10px] text-center text-slate-500 mt-4">
+              Tracking active • GPS updates in real-time
+            </p>
+          </div>
+
+          {/* Mobile: bottom sheet card (visible only on small screens) */}
+          <div className="lg:hidden bg-slate-900/95 backdrop-blur-xl border-t border-white/15 rounded-t-3xl p-5 shadow-2xl relative overflow-y-auto max-h-[45vh] sm:max-h-[40vh]">
+            <div className="w-12 h-1.5 bg-white/20 rounded-full mx-auto -mt-2"></div>
+
+            {/* Status & ETA */}
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <p className="text-xs uppercase tracking-wider text-orange-400 font-bold">Estimated Arrival</p>
+                <h2 className="text-xl font-black text-white flex items-center gap-2 mt-0.5">
+                  <Navigation className="w-4 h-4 text-orange-400" />
+                  <span>~{eta ?? '—'} mins away</span>
+                </h2>
+              </div>
+              <span className="bg-emerald-500/20 text-emerald-300 text-xs font-semibold px-3 py-1.5 rounded-full border border-emerald-500/30 flex items-center gap-1.5 shrink-0">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                {busData.status}
+              </span>
+            </div>
+
+            {/* Passenger card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-orange-500 to-amber-600 rounded-xl flex items-center justify-center shadow-lg shadow-orange-500/20">
+                <Phone className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-white">{studentName}</h4>
+                <p className="text-xs text-slate-400">Mobile: {mobileNumber}</p>
+              </div>
+            </div>
+
+            {/* Driver card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-slate-700 to-slate-800 rounded-xl flex items-center justify-center font-bold text-orange-400 border border-white/10 shadow-lg">
+                DR
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-white">{busData.driverName}</h4>
+                <p className="text-xs text-slate-400">Assigned Driver • {busData.busNo}</p>
+              </div>
+            </div>
+
+            <p className="text-[10px] text-center text-slate-500 mt-3">
+              Tracking active • GPS updates in real-time
+            </p>
+          </div>
+        </div>
       </div>
+
+      {/* SOS Modal */}
+      {sosModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center px-4 py-8">
+          <div className="bg-slate-900 border border-red-500/40 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-2xl text-center space-y-4">
+            <div className="w-16 h-16 bg-red-500/20 rounded-2xl mx-auto flex items-center justify-center border border-red-500/40">
+              <ShieldAlert className="w-8 h-8 text-red-500" />
+            </div>
+            <h3 className="text-xl font-bold text-white">Trigger Emergency SOS?</h3>
+            <p className="text-sm text-slate-300 leading-relaxed">
+              This will instantly alert the PSIT Security Desk and Transport Incharge using your registered mobile number ({mobileNumber}).
+            </p>
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                onClick={() => setSosModalOpen(false)}
+                className="bg-white/10 hover:bg-white/20 text-white font-semibold py-3 rounded-xl text-sm transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTriggerSOS}
+                disabled={sosSent}
+                className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl text-sm shadow-lg shadow-red-600/40 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {sosSent ? 'Sending...' : 'Yes, Send SOS'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

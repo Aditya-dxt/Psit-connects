@@ -1,10 +1,82 @@
 @import "tailwindcss";
 @import "leaflet/dist/leaflet.css";
 
+/* Bus marker pulse animation */
+@keyframes bus-pulse {
+  0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  50% { transform: translate(-50%, -50%) scale(2.5); opacity: 0.4; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+/* Custom breakpoint for small laptops / large tablets */
+@media (min-width: 480px) {
+  .xs\:inline {
+    display: inline;
+  }
+}
+
 /* Ensures the Leaflet map container expands properly */
 .leaflet-container {
   width: 100%;
   height: 100%;
   border-radius: 0.75rem;
   z-index: 0;
+}
+
+/* Smooth map tile loading */
+.leaflet-tile {
+  transition: opacity 0.3s ease;
+}
+
+/* Custom marker popups — dark theme */
+.leaflet-popup-content-wrapper {
+  background: #1e293b;
+  color: white;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.leaflet-popup-tip {
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.leaflet-popup-close-button {
+  color: #94a3b8 !important;
+  font-size: 18px !important;
+  top: 8px !important;
+  right: 8px !important;
+}
+
+.leaflet-popup-close-button:hover {
+  color: white !important;
+}
+
+/* Map attribution — subtle */
+.leaflet-control-attribution {
+  background: rgba(15, 23, 42, 0.8) !important;
+  color: #64748b !important;
+  font-size: 10px !important;
+  backdrop-filter: blur(4px);
+}
+
+.leaflet-control-attribution a {
+  color: #94a3b8 !important;
+}
+
+/* Hide default zoom controls — we use custom ones if needed */
+.leaflet-control-zoom {
+  display: none;
+}
+
+/* Custom bus marker refinements */
+.custom-bus-marker {
+  background: none !important;
+  border: none !important;
+}
+
+.custom-user-marker {
+  background: none !important;
+  border: none !important;
 }
