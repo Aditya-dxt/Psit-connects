@@ -16,12 +16,16 @@ const { registerSocket } = require("./socket");
 const app = express();
 const server = http.createServer(app);
 
-const allowedOrigin = process.env.CLIENT_ORIGIN || "*";
+const clientOrigin = process.env.CLIENT_ORIGIN;
+const allowedOrigins = !clientOrigin || clientOrigin === "*"
+  ? "*"
+  : Array.from(new Set([clientOrigin, "http://localhost:5173", "http://127.0.0.1:5173"]));
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigin,
-    methods: ["GET", "POST", "PUT", "DELETE"]
+    origin: allowedOrigins,
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
   }
 });
 
@@ -29,7 +33,8 @@ app.set("io", io);
 
 app.use(
   cors({
-    origin: allowedOrigin === "*" ? true : allowedOrigin
+    origin: allowedOrigins === "*" ? true : allowedOrigins,
+    credentials: true
   })
 );
 

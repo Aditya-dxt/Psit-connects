@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+const fs = require("fs");
+const path = require("path");
 const bcrypt = require("bcryptjs");
 const pool = require("./config/db");
 
@@ -8,6 +10,11 @@ async function seed() {
 
   try {
     await client.query("BEGIN");
+
+    // 0. Ensure schema tables exist
+    const schemaPath = path.join(__dirname, "config", "schema.sql");
+    const schemaSql = fs.readFileSync(schemaPath, "utf8");
+    await client.query(schemaSql);
 
     // Clear existing demo data in the correct dependency order
     await client.query("DELETE FROM locations");
@@ -18,24 +25,12 @@ async function seed() {
     await client.query("DELETE FROM routes");
 
     // Reset IDs so the seed stays clean
-    await client.query(
-      "ALTER SEQUENCE routes_id_seq RESTART WITH 1"
-    );
-    await client.query(
-      "ALTER SEQUENCE stops_id_seq RESTART WITH 1"
-    );
-    await client.query(
-      "ALTER SEQUENCE buses_id_seq RESTART WITH 1"
-    );
-    await client.query(
-      "ALTER SEQUENCE users_id_seq RESTART WITH 1"
-    );
-    await client.query(
-      "ALTER SEQUENCE trips_id_seq RESTART WITH 1"
-    );
-    await client.query(
-      "ALTER SEQUENCE locations_id_seq RESTART WITH 1"
-    );
+    await client.query("ALTER SEQUENCE routes_id_seq RESTART WITH 1");
+    await client.query("ALTER SEQUENCE stops_id_seq RESTART WITH 1");
+    await client.query("ALTER SEQUENCE buses_id_seq RESTART WITH 1");
+    await client.query("ALTER SEQUENCE users_id_seq RESTART WITH 1");
+    await client.query("ALTER SEQUENCE trips_id_seq RESTART WITH 1");
+    await client.query("ALTER SEQUENCE locations_id_seq RESTART WITH 1");
 
     // 1. Create route
     const routeResult = await client.query(
@@ -91,37 +86,55 @@ async function seed() {
       ]
     );
 
-    // Prevent unused-variable warnings in some editors
-    const stop1Id = stop1Result.rows[0].id;
-    const stop2Id = stop2Result.rows[0].id;
+    console.log(`Created stops: ${stop1Result.rows[0].id}, ${stop2Result.rows[0].id}`);
 
-    console.log(`Created stops: ${stop1Id}, ${stop2Id}`);
-
-    // 3. Create bus
-    const busResult = await client.query(
+    // 3. Create buses (PSIT-01 and PSIT-07)
+    const bus1Result = await client.query(
       `
       INSERT INTO buses
-        (bus_number, registration_number, route_id, qr_code, status)
+        (bus_number, registration_number, route_id, qr_code, status, current_lat, current_lng)
       VALUES
-        ($1, $2, $3, $4, $5)
+        ($1, $2, $3, $4, $5, $6, $7)
       RETURNING id
       `,
       [
         "PSIT-01",
-        "UPXX-0001",
+        "UP78-BT-0001",
         routeId,
         "PSIT-BUS-01",
-        "offline"
+        "offline",
+        26.4499,
+        80.3319
       ]
     );
 
-    const busId = busResult.rows[0].id;
+    const bus2Result = await client.query(
+      `
+      INSERT INTO buses
+        (bus_number, registration_number, route_id, qr_code, status, current_lat, current_lng)
+      VALUES
+        ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id
+      `,
+      [
+        "PSIT-07",
+        "UP78-BT-0007",
+        routeId,
+        "PSIT-BUS-07",
+        "offline",
+        26.4600,
+        80.3200
+      ]
+    );
+
+    const bus1Id = bus1Result.rows[0].id;
+    const bus2Id = bus2Result.rows[0].id;
 
     // 4. Hash passwords
     const driverPassword = await bcrypt.hash("driver123", 10);
     const studentPassword = await bcrypt.hash("student123", 10);
 
-    // 5. Create driver
+    // 5. Create driver (assigned to bus PSIT-01)
     await client.query(
       `
       INSERT INTO users
@@ -134,11 +147,11 @@ async function seed() {
         "9999999999",
         driverPassword,
         "driver",
-        busId
+        bus1Id
       ]
     );
 
-    // 6. Create student
+    // 6. Create students
     await client.query(
       `
       INSERT INTO users
@@ -154,26 +167,44 @@ async function seed() {
       ]
     );
 
+    // Seed additional student matching frontend prefilled default (9876543210)
+    await client.query(
+      `
+      INSERT INTO users
+        (name, mobile, password_hash, role)
+      VALUES
+        ($1, $2, $3, $4)
+      `,
+      [
+        "Aarav Sharma",
+        "9876543210",
+        studentPassword,
+        "student"
+      ]
+    );
+
     await client.query("COMMIT");
 
     console.log("");
-    console.log("=================================");
-    console.log("      PSIT BusTrack Seeded");
-    console.log("=================================");
+    console.log("==================================================");
+    console.log("       PSIT BusTrack Database Seeded Successfully");
+    console.log("==================================================");
     console.log("");
-    console.log("Route : PSIT Campus Route A");
-    console.log("Bus   : PSIT-01");
-    console.log("QR    : PSIT-BUS-01");
+    console.log("Route     : PSIT Campus Route A (ID: " + routeId + ")");
+    console.log("Buses     : PSIT-01 (QR: PSIT-BUS-01), PSIT-07 (QR: PSIT-BUS-07)");
     console.log("");
-    console.log("Driver Login:");
-    console.log("Mobile   : 9999999999");
-    console.log("Password : driver123");
+    console.log("Driver Credentials:");
+    console.log("  Mobile   : 9999999999");
+    console.log("  Password : driver123");
+    console.log("  Assigned : PSIT-01 (Bus ID: " + bus1Id + ")");
     console.log("");
-    console.log("Student Login:");
-    console.log("Mobile   : 8888888888");
-    console.log("Password : student123");
+    console.log("Student Credentials:");
+    console.log("  Mobile   : 8888888888");
+    console.log("  Password : student123");
     console.log("");
-    console.log("=================================");
+    console.log("  Mobile   : 9876543210 (Default in UI)");
+    console.log("  Password : student123");
+    console.log("==================================================");
   } catch (error) {
     await client.query("ROLLBACK");
 

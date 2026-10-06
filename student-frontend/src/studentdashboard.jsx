@@ -1,18 +1,64 @@
 import { useState, useEffect } from 'react';
 import { Bus, Navigation, Phone, MapPin, Clock, Shield, ArrowRight, ChevronRight } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { api, getUser } from './services/api';
 
 export default function StudentDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Verified mobile from login state
-  const registeredMobile = location.state?.mobileNumber || "9876543210";
+  const user = getUser();
+  // Verified mobile from login state or stored user profile
+  const [registeredMobile, setRegisteredMobile] = useState(
+    location.state?.mobileNumber || user?.mobile || "9876543210"
+  );
 
-  const [studentName, setStudentName] = useState('');
+  const [studentName, setStudentName] = useState(user?.name || '');
   const [busNumber, setBusNumber] = useState('');
+  const [availableBuses, setAvailableBuses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [focusedField, setFocusedField] = useState(null);
+
+  // Fetch student profile and available buses on mount
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadData() {
+      try {
+        const [profileRes, busesRes] = await Promise.allSettled([
+          api.getStudentProfile(),
+          api.getBuses()
+        ]);
+
+        if (isMounted && profileRes.status === 'fulfilled' && profileRes.value.user) {
+          const profile = profileRes.value.user;
+          if (profile.name) setStudentName(profile.name);
+          if (profile.mobile) setRegisteredMobile(profile.mobile);
+        }
+
+        if (isMounted && busesRes.status === 'fulfilled' && Array.isArray(busesRes.value.buses)) {
+          const buses = busesRes.value.buses;
+          setAvailableBuses(buses);
+          if (buses.length > 0 && !busNumber) {
+            setBusNumber(buses[0].bus_number);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to load initial student dashboard data:', err);
+      }
+    }
+
+    loadData();
+
+    const timer = setTimeout(() => {
+      document.getElementById('name-input')?.focus();
+    }, 300);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, []);
 
   const handleTrackBus = (e) => {
     e.preventDefault();
@@ -28,6 +74,13 @@ export default function StudentDashboard() {
 
     setLoading(true);
 
+    const matchedBus = availableBuses.find(
+      (b) => b.bus_number.toUpperCase() === busNumber.trim().toUpperCase()
+    );
+
+    const targetBusNumber = matchedBus ? matchedBus.bus_number : busNumber.trim();
+    const targetBusId = matchedBus ? matchedBus.id : 1;
+
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
@@ -36,39 +89,45 @@ export default function StudentDashboard() {
             longitude: position.coords.longitude
           };
 
-          console.log("Live location saved for mobile:", registeredMobile);
-
-          setTimeout(() => {
-            setLoading(false);
-            navigate('/live-tracking', {
-              state: {
-                studentName,
-                busNumber,
-                mobileNumber: registeredMobile,
-                liveCoords
-              }
-            });
-          }, 1000);
+          setLoading(false);
+          navigate('/live-tracking', {
+            state: {
+              studentName,
+              busNumber: targetBusNumber,
+              busId: targetBusId,
+              mobileNumber: registeredMobile,
+              liveCoords
+            }
+          });
         },
         (error) => {
-          console.error("Location error:", error);
-          alert("Location permission is required for live tracking.");
+          console.warn("Location error:", error);
+          // Fallback coords if permission denied so student can still view bus on map
           setLoading(false);
+          navigate('/live-tracking', {
+            state: {
+              studentName,
+              busNumber: targetBusNumber,
+              busId: targetBusId,
+              mobileNumber: registeredMobile,
+              liveCoords: null
+            }
+          });
         }
       );
     } else {
-      alert("Your browser does not support geolocation.");
       setLoading(false);
+      navigate('/live-tracking', {
+        state: {
+          studentName,
+          busNumber: targetBusNumber,
+          busId: targetBusId,
+          mobileNumber: registeredMobile,
+          liveCoords: null
+        }
+      });
     }
   };
-
-  // Auto-focus name field on mount
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      document.getElementById('name-input')?.focus();
-    }, 300);
-    return () => clearTimeout(timer);
-  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-950 text-white font-sans overflow-hidden">

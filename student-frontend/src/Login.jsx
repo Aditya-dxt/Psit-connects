@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Bus, User, Truck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { api } from './services/api';
 
 export default function App() {
   const navigate = useNavigate();
@@ -25,28 +26,39 @@ export default function App() {
       return;
     }
 
+    if (showRegister) {
+      setErrorMessage("Student registration is managed by PSIT Transport Cell. Please sign in with your registered student mobile (e.g. 8888888888 or 9876543210).");
+      return;
+    }
+
     setLoading(true);
-
-    // Database verification simulation
+    // Proceed to password / verification step
     setTimeout(() => {
-      const registeredDatabaseNumbers = ['9876543210', '9123456789', '9988776655'];
-
-      if (registeredDatabaseNumbers.includes(mobileNumber)) {
-        setOtpSent(true);
-      } else {
-        setErrorMessage("Access Denied: Yeh mobile number transport database mein registered nahi hai.");
-      }
+      setOtpSent(true);
       setLoading(false);
-    }, 800);
+    }, 400);
   };
 
-  const handleVerifyOTP = () => {
-    if (otp.length === 4) {
-      // OTP verify hone ke baad dashboard par mobile number aur role pass kar rahe hain
-      const dashboardPath = role === 'driver' ? '/driver-dashboard' : '/dashboard';
-      navigate(dashboardPath, { state: { mobileNumber, role } }); 
-    } else {
-      alert("Please enter a valid 4-digit OTP.");
+  const handleVerifyOTP = async () => {
+    setErrorMessage('');
+    const credential = otp.trim() || (role === 'driver' ? 'driver123' : 'student123');
+
+    try {
+      setLoading(true);
+      const res = await api.login(mobileNumber, credential);
+      
+      const dashboardPath = res.user.role === 'driver' ? '/driver-dashboard' : '/dashboard';
+      navigate(dashboardPath, {
+        state: {
+          mobileNumber: res.user.mobile,
+          role: res.user.role,
+          user: res.user
+        }
+      });
+    } catch (err) {
+      setErrorMessage(err.message || 'Login failed. Please check your credentials.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -210,22 +222,22 @@ export default function App() {
                 <>
                   <div className="flex flex-col gap-2">
                     <label className="text-white/80 text-xs font-bold tracking-wider uppercase">
-                      Enter 4-Digit OTP
+                      Enter Password / OTP
                     </label>
                     <input 
-                      type="text" 
-                      maxLength="4"
-                      placeholder="••••"
+                      type="password" 
+                      placeholder="••••••••"
                       value={otp}
-                      onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
-                      className="w-full bg-slate-800/80 text-white placeholder-white/40 px-4 py-3 rounded-xl border border-white/10 text-center tracking-[1em] text-xl focus:outline-none focus:border-[#F58220] focus:ring-1 focus:ring-[#F58220] transition-colors"
+                      onChange={(e) => setOtp(e.target.value)}
+                      className="w-full bg-slate-800/80 text-white placeholder-white/40 px-4 py-3 rounded-xl border border-white/10 text-center tracking-widest text-lg focus:outline-none focus:border-[#F58220] focus:ring-1 focus:ring-[#F58220] transition-colors"
                     />
                   </div>
                   <button 
                     onClick={handleVerifyOTP}
-                    className="w-full bg-green-500 hover:bg-green-600 text-white font-bold text-lg py-3.5 rounded-xl shadow-lg transition-colors mt-2 cursor-pointer"
+                    disabled={loading}
+                    className="w-full bg-green-500 hover:bg-green-600 text-white font-bold text-lg py-3.5 rounded-xl shadow-lg transition-colors mt-2 cursor-pointer disabled:opacity-50"
                   >
-                    Verify & Login
+                    {loading ? 'Authenticating...' : 'Verify & Login'}
                   </button>
                   
                   {/* Back button in case of a typo */}

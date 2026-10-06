@@ -1,0 +1,16 @@
+# Environment Variables
+.env
+.env*.local
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build outputs
+dist/
+build/
+
+.neon

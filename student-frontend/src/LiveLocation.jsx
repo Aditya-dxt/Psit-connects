@@ -4,6 +4,8 @@ import { Bus, ArrowLeft, ShieldAlert, Clock, MapPin, Phone, Navigation, Send, Cl
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
+import { api } from './services/api';
+import { getSocket } from './services/socket';
 
 // Custom bus marker icon
 const busIcon = new L.DivIcon({
@@ -90,13 +92,14 @@ export default function LiveTracking() {
   const busMarkerRef = useRef(null);
   const polylineRef = useRef(null);
 
-  const { studentName, busNumber, mobileNumber } = location.state || {
+  const { studentName, busNumber, mobileNumber, busId: routeBusId } = location.state || {
     studentName: "Student",
     busNumber: "PSIT-07",
     mobileNumber: "9876543210"
   };
 
   const [busData, setBusData] = useState(null);
+  const [busCoords, setBusCoords] = useState({ latitude: 26.4600, longitude: 80.3200 });
   const [userCoords, setUserCoords] = useState(null);
   const [distance, setDistance] = useState(null);
   const [eta, setEta] = useState(null);
@@ -105,28 +108,119 @@ export default function LiveTracking() {
   const [sosModalOpen, setSosModalOpen] = useState(false);
   const [sosSent, setSosSent] = useState(false);
 
-  // Bus data (mock — replace with backend API)
-  const busCoords = { latitude: 26.4600, longitude: 80.3200 };
-
+  // Fetch real bus info and listen for real-time location updates via Socket.IO
   useEffect(() => {
-    async function fetchData() {
-      setTimeout(() => {
-        const databaseBuses = {
-          "PSIT-07": {
-            busNo: "PSIT-07",
-            routeName: "Route 1 — NH-2",
-            driverName: "Ramesh Kumar",
+    let isMounted = true;
+    let pollInterval = null;
+    let targetBusId = routeBusId;
+
+    async function loadBusData() {
+      try {
+        const res = await api.getBuses();
+        const buses = res.buses || [];
+        
+        let found = null;
+        if (targetBusId) {
+          found = buses.find(b => Number(b.id) === Number(targetBusId));
+        }
+        if (!found && busNumber) {
+          found = buses.find(b => b.bus_number.toUpperCase() === busNumber.toUpperCase());
+        }
+        if (!found && buses.length > 0) {
+          found = buses[0];
+        }
+
+        if (isMounted && found) {
+          targetBusId = found.id;
+          setBusData({
+            id: found.id,
+            busNo: found.bus_number,
+            routeName: found.route_name ? `Route ${found.route_number || ''} — ${found.route_name}` : "PSIT Campus Route",
+            driverName: "Assigned PSIT Driver",
+            status: found.status === 'running' ? 'Active / On Route' : (found.status === 'stopped' ? 'Stopped' : 'On Time')
+          });
+
+          if (found.current_lat && found.current_lng) {
+            setBusCoords({
+              latitude: Number(found.current_lat),
+              longitude: Number(found.current_lng)
+            });
+          }
+          setLoading(false);
+        } else if (isMounted) {
+          setBusData({
+            busNo: busNumber,
+            routeName: "PSIT Campus Route",
+            driverName: "Assigned PSIT Driver",
             status: "On Time"
+          });
+          setLoading(false);
+        }
+      } catch (err) {
+        console.warn('Failed to fetch buses from API, using fallback:', err);
+        if (isMounted) {
+          setBusData({
+            busNo: busNumber,
+            routeName: "PSIT Campus Route",
+            driverName: "Assigned PSIT Driver",
+            status: "On Time"
+          });
+          setLoading(false);
+        }
+      }
+
+      // Socket.IO real-time event listener
+      const socket = getSocket();
+      if (socket) {
+        socket.emit('join:student');
+        if (targetBusId) {
+          socket.emit('join:bus', targetBusId);
+        }
+
+        const handleBusLocation = (data) => {
+          if (!targetBusId || Number(data.busId) === Number(targetBusId)) {
+            if (isMounted && data.lat && data.lng) {
+              setBusCoords({
+                latitude: Number(data.lat),
+                longitude: Number(data.lng)
+              });
+              if (data.busNumber) {
+                setBusData(prev => prev ? { ...prev, busNo: data.busNumber } : prev);
+              }
+            }
           }
         };
 
-        const foundBus = databaseBuses[busNumber.toUpperCase()] || databaseBuses["PSIT-07"];
-        setBusData(foundBus);
-        setLoading(false);
-      }, 800);
+        socket.on('bus:location', handleBusLocation);
+
+        return () => {
+          socket.off('bus:location', handleBusLocation);
+        };
+      }
     }
-    fetchData();
-  }, [busNumber]);
+
+    loadBusData();
+
+    // Fallback polling every 5 seconds for current location
+    pollInterval = setInterval(async () => {
+      if (targetBusId) {
+        try {
+          const locRes = await api.getBusLocation(targetBusId);
+          if (isMounted && locRes.location && locRes.location.lat && locRes.location.lng) {
+            setBusCoords({
+              latitude: Number(locRes.location.lat),
+              longitude: Number(locRes.location.lng)
+            });
+          }
+        } catch {}
+      }
+    }, 5000);
+
+    return () => {
+      isMounted = false;
+      if (pollInterval) clearInterval(pollInterval);
+    };
+  }, [busNumber, routeBusId]);
 
   // Live user location via Geolocation API
   useEffect(() => {
@@ -139,22 +233,6 @@ export default function LiveTracking() {
       (position) => {
         const { latitude, longitude } = position.coords;
         setUserCoords({ latitude, longitude });
-
-        if (userMarkerRef.current) {
-          userMarkerRef.current.setLatLng([latitude, longitude]);
-        }
-
-        if (busMarkerRef.current && userCoords) {
-          const busPos = [busCoords.latitude, busCoords.longitude];
-          const userPos = [latitude, longitude];
-          if (polylineRef.current) {
-            polylineRef.current.setLatLngs([busPos, userPos]);
-          }
-          const dist = calculateDistance(busCoords.latitude, busCoords.longitude, latitude, longitude);
-          setDistance(dist);
-          setEta(Math.max(2, Math.round(dist * 3)));
-        }
-
         setLocationPermission('granted');
       },
       (error) => {
@@ -170,6 +248,22 @@ export default function LiveTracking() {
 
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
+
+  // Recalculate distance & ETA when either busCoords or userCoords changes
+  useEffect(() => {
+    if (userCoords && busCoords) {
+      const dist = calculateDistance(busCoords.latitude, busCoords.longitude, userCoords.latitude, userCoords.longitude);
+      setDistance(dist);
+      setEta(Math.max(2, Math.round(dist * 3)));
+
+      if (polylineRef.current) {
+        polylineRef.current.setLatLngs([
+          [busCoords.latitude, busCoords.longitude],
+          [userCoords.latitude, userCoords.longitude]
+        ]);
+      }
+    }
+  }, [busCoords, userCoords]);
 
   // Calculate distance in KM between two lat/lng points
   function calculateDistance(lat1, lon1, lat2, lon2) {

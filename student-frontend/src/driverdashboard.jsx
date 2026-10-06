@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Html5Qrcode } from 'html5-qrcode';
 import { Bus, QrCode, MapPin, Wifi, WifiOff, Play, Square, Clock, Shield, Phone } from 'lucide-react';
+import { api, getUser } from './services/api';
 
 // Mock registered mobile numbers database (same as student side)
 const REGISTERED_MOBILES = ["9876543210", "9123456789", "9988776655"];
@@ -10,14 +11,23 @@ export default function DriverDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const registeredMobile = location.state?.mobileNumber || "9988776655";
-  const role = location.state?.role || "driver";
+  const user = getUser();
+  const [registeredMobile, setRegisteredMobile] = useState(
+    location.state?.mobileNumber || user?.mobile || "9988776655"
+  );
+  const role = location.state?.role || user?.role || "driver";
 
   // State
-  const [driverName, setDriverName] = useState('');
+  const [driverName, setDriverName] = useState(user?.name || '');
   const [assignedBus, setAssignedBus] = useState('');
   const [tripStatus, setTripStatus] = useState('Idle'); // Idle | Active | Completed
+  const [activeTrip, setActiveTrip] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // Throttling ref for GPS transmission (3-5s requirement)
+  const lastGpsSentRef = useRef(0);
+  const activeTripRef = useRef(null);
+  activeTripRef.current = activeTrip;
 
   // QR Scanner state
   const [scannerActive, setScannerActive] = useState(false);
@@ -37,33 +47,74 @@ export default function DriverDashboard() {
   const [isBackground, setIsBackground] = useState(false);
   const [backgroundTracking, setBackgroundTracking] = useState(false);
 
+  // On mount: Load driver profile and active trip from backend
+  useEffect(() => {
+    let isMounted = true;
+    async function loadDriver() {
+      try {
+        const [profileRes, activeTripRes] = await Promise.allSettled([
+          api.getDriverProfile(),
+          api.getActiveTrip()
+        ]);
+
+        if (isMounted && profileRes.status === 'fulfilled' && profileRes.value.user) {
+          const prof = profileRes.value.user;
+          if (prof.name) setDriverName(prof.name);
+          if (prof.mobile) setRegisteredMobile(prof.mobile);
+          if (prof.bus?.busNumber) setAssignedBus(prof.bus.busNumber);
+        }
+
+        if (isMounted && activeTripRes.status === 'fulfilled' && activeTripRes.value.trip) {
+          const trip = activeTripRes.value.trip;
+          setActiveTrip(trip);
+          activeTripRef.current = trip;
+          setTripStatus('Active');
+          if (trip.bus_number) setAssignedBus(trip.bus_number);
+          startGpsTracking(trip.bus_number);
+        }
+      } catch (err) {
+        console.warn('Driver dashboard init notice:', err);
+      }
+    }
+
+    loadDriver();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   // ─── QR Scanner ───────────────────────────────────────────────
 
   const startScanner = useCallback(async () => {
     setScannerError(null);
     setCameraLoading(true);
 
-    // ─── Testing mode: simulate QR scan ─────────────────────────
-    // Simulates a successful QR scan with a random registered mobile
-    // Remove this block and the try/catch below for production use
+    // ─── Testing mode: simulate QR scan and verify with backend ────
     setScannerActive(true);
-    const simulatedMobile = REGISTERED_MOBILES[Math.floor(Math.random() * REGISTERED_MOBILES.length)];
-    console.log('[TEST MODE] Simulated QR scan with mobile:', simulatedMobile);
+    const busQr = assignedBus
+      ? `PSIT-BUS-${assignedBus.replace('PSIT-', '').padStart(2, '0')}`
+      : 'PSIT-BUS-01';
 
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate scan delay
+    console.log('[QR SCAN] Verifying bus QR with backend:', busQr);
+    await new Promise(resolve => setTimeout(resolve, 800)); // Scan animation delay
+
+    try {
+      const verifyRes = await api.verifyQr(busQr);
+      if (verifyRes.bus?.busNumber) {
+        setAssignedBus(verifyRes.bus.busNumber);
+      }
+    } catch (err) {
+      console.warn('QR verify notice:', err.message);
+    }
 
     setScanResult({
       success: true,
-      mobile: simulatedMobile,
+      mobile: registeredMobile,
       timestamp: new Date().toISOString()
     });
 
-    // Keep scannerActive true so the modal stays open and overlay shows
     setCameraLoading(false);
-
-    // Start GPS tracking after simulated scan
-    startGpsTracking(simulatedMobile);
-
+    startGpsTracking(registeredMobile);
     return;
     // ─── End test mode ───────────────────────────────────────────
 
@@ -165,15 +216,19 @@ export default function DriverDashboard() {
         else if (accuracy < 50) setGpsSignal('good');
         else setGpsSignal('weak');
 
-        console.log(`GPS update for ${scannedMobile}:`, {
-          lat: latitude,
-          lng: longitude,
-          accuracy,
-          timestamp: new Date().toISOString()
-        });
-
-        // In a real app, send this to backend
-        // fetch('/api/driver/gps', { method: 'POST', body: JSON.stringify({...}) })
+        // Throttle GPS transmission to backend (every 3-5 seconds, requirement 4)
+        const now = Date.now();
+        if (activeTripRef.current?.id && (now - lastGpsSentRef.current >= 3500)) {
+          lastGpsSentRef.current = now;
+          api.updateTripLocation(activeTripRef.current.id, {
+            lat: latitude,
+            lng: longitude,
+            speed: position.coords.speed || 0,
+            accuracy: accuracy || null
+          }).catch((err) => {
+            console.warn('GPS transmission error:', err.message);
+          });
+        }
       },
       (error) => {
         console.warn('GPS error:', error.message);
@@ -247,7 +302,7 @@ export default function DriverDashboard() {
 
   // ─── Trip Controls ─────────────────────────────────────────────
 
-  const handleStartTrip = () => {
+  const handleStartTrip = async () => {
     if (!gpsConnected) {
       alert('GPS is not connected. Please scan a QR code first to activate GPS tracking.');
       return;
@@ -258,27 +313,49 @@ export default function DriverDashboard() {
     }
 
     setLoading(true);
-    setTimeout(() => {
-      setTripStatus('Active');
+    try {
+      const res = await api.startTrip();
+      if (res.trip) {
+        setActiveTrip(res.trip);
+        activeTripRef.current = res.trip;
+        setTripStatus('Active');
+      }
+    } catch (err) {
+      if (err.message && err.message.toLowerCase().includes('already has an active trip')) {
+        const activeRes = await api.getActiveTrip();
+        if (activeRes.trip) {
+          setActiveTrip(activeRes.trip);
+          activeTripRef.current = activeRes.trip;
+          setTripStatus('Active');
+        }
+      } else {
+        alert(err.message || 'Failed to start trip.');
+      }
+    } finally {
       setLoading(false);
-      console.log(`Trip started with bus ${assignedBus} at ${gpsCoords}`);
-    }, 1000);
+    }
   };
 
-  const handleEndTrip = () => {
-    if (tripStatus !== 'Active') {
+  const handleEndTrip = async () => {
+    if (tripStatus !== 'Active' || !activeTripRef.current?.id) {
       alert('No active trip to end.');
       return;
     }
 
     setLoading(true);
-    setTimeout(() => {
+    try {
+      await api.endTrip(activeTripRef.current.id);
       setTripStatus('Completed');
+      setActiveTrip(null);
+      activeTripRef.current = null;
       setTimeout(() => {
         setTripStatus('Idle');
       }, 2000);
+    } catch (err) {
+      alert(err.message || 'Failed to end trip.');
+    } finally {
       setLoading(false);
-    }, 1000);
+    }
   };
 
   // ─── Cleanup ───────────────────────────────────────────────────
@@ -286,7 +363,7 @@ export default function DriverDashboard() {
   useEffect(() => {
     return () => {
       if (watchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(watchRef.current);
+        navigator.geolocation.clearWatch(watchIdRef.current);
       }
       if (scannerInstanceRef.current) {
         scannerInstanceRef.current.stop().catch(() => {});
